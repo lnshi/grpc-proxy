@@ -21,4 +21,6 @@ import (
 // are invoked. So decisions around authorization, monitoring etc. are better to be handled there.
 //
 // See the rather rich example.
-type StreamDirector func(ctx context.Context, fullMethodName string) (context.Context, *grpc.ClientConn, error)
+//
+// The 3rd return value(`chan<- error`) should NOT be `nil` in any case.
+type StreamDirector func(ctx context.Context, fullMethodName string) (context.Context, *grpc.ClientConn, chan<- error, error)

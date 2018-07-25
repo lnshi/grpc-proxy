@@ -65,8 +65,11 @@ func (s *handler) handler(srv interface{}, serverStream grpc.ServerStream) error
 	}
 
 	// We require that the director's returned context inherits from the serverStream.Context().
-	outgoingCtx, backendConn, err := s.director(serverStream.Context(), fullMethodName)
+	// The 3rd returned value(`notifier`) should NOT be `nil` in any case.
+	outgoingCtx, backendConn, notifier, err := s.director(serverStream.Context(), fullMethodName)
+	defer close(notifier)
 	if err != nil {
+		notifier <- err
 		return err
 	}
 
@@ -75,6 +78,7 @@ func (s *handler) handler(srv interface{}, serverStream grpc.ServerStream) error
 	// TODO(mwitkow): Add a `forwarded` header to metadata, https://en.wikipedia.org/wiki/X-Forwarded-For.
 	clientStream, err := grpc.NewClientStream(clientCtx, clientStreamDescForProxying, backendConn, fullMethodName)
 	if err != nil {
+		notifier <- err
 		return err
 	}
 	// Explicitly *do not close* s2cErrChan and c2sErrChan, otherwise the select below will not terminate.
@@ -96,7 +100,9 @@ func (s *handler) handler(srv interface{}, serverStream grpc.ServerStream) error
 				// to cancel the clientStream to the backend, let all of its goroutines be freed up by the CancelFunc and
 				// exit with an error to the stack
 				clientCancel()
-				return grpc.Errorf(codes.Internal, "failed proxying s2c: %v", s2cErr)
+				err := grpc.Errorf(codes.Internal, "failed proxying s2c: %v", s2cErr)
+				notifier <- err
+				return err
 			}
 		case c2sErr := <-c2sErrChan:
 			// This happens when the clientStream has nothing else to offer (io.EOF), returned a gRPC error. In those two
@@ -105,12 +111,16 @@ func (s *handler) handler(srv interface{}, serverStream grpc.ServerStream) error
 			serverStream.SetTrailer(clientStream.Trailer())
 			// c2sErr will contain RPC error from client code. If not io.EOF return the RPC error as server stream error.
 			if c2sErr != io.EOF {
+				notifier <- c2sErr
 				return c2sErr
 			}
 			return nil
 		}
 	}
-	return grpc.Errorf(codes.Internal, "gRPC proxying should never reach this stage.")
+
+	err0 := grpc.Errorf(codes.Internal, "gRPC proxying should never reach this stage.")
+	notifier <- err0
+	return err0
 }
 
 func (s *handler) forwardClientToServer(src grpc.ClientStream, dst grpc.ServerStream) chan error {
